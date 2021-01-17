@@ -20,7 +20,7 @@ void gpio_in_reset(struct gpio_in g, int8_t pull_up);
 uint8_t gpio_in_read(struct gpio_in g);
 
 struct gpio_adc {
-    int fd;
+    int pin;
 };
 struct gpio_adc gpio_adc_setup(uint32_t pin);
 uint32_t gpio_adc_sample(struct gpio_adc g);
