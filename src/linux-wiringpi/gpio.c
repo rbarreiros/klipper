@@ -13,7 +13,6 @@ DECL_ENUMERATION_RANGE("pin", "gpio0", 0, MAX_GPIO_LINES);
 
 struct gpio_line {
   int pin;
-  int dir;
   int state;
 };
 
@@ -25,7 +24,6 @@ gpio_out_setup(uint32_t pin, uint8_t val)
 {
   struct gpio_line *line = &lines[pin];
   line->pin = pin;
-  line->dir = OUTPUT;
   struct gpio_out g = { .line = line };
   gpio_out_reset(g, val);
   return g;
@@ -41,10 +39,9 @@ gpio_out_reset(struct gpio_out g, uint8_t val)
     shutdown("Unable to initialize wiringPi");
     return;
   }
-
+  pinMode(g.line->pin, OUTPUT);
   g.line->state = val;
-  pinMode(g.line->pin, g.line->dir);
-  digitalWrite(g.line->pin, val);
+  gpio_out_write(g, val);
 }
 
 void
@@ -71,7 +68,6 @@ gpio_in_setup(uint32_t pin, int8_t pull_up)
 {
   struct gpio_line *line = &lines[pin];
   line->pin = pin;
-  line->dir = INPUT;
   struct gpio_in g = { .line = line };
   gpio_in_reset(g, pull_up);
   return g;
@@ -90,8 +86,8 @@ gpio_in_reset(struct gpio_in g, int8_t pull_up)
 
   // Save it anyway, not that we're going to need it further down the line
   g.line->state = pull_up;
-  pinMode(g.line->pin, g.line->dir);
-
+  pinMode(g.line->pin, INPUT);
+  
   if(pull_up > 0)
     pullUpDnControl(g.line->pin, PUD_UP);
   else if(pull_up < 0)

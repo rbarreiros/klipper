@@ -1,17 +1,14 @@
-// Read analog values from Linux IIO device
+// Reading analog values via libwiringPi
 //
-// Copyright (C) 2017  Kevin O'Connor <kevin@koconnor.net>
+// Copyright (C) 2021  Rui Barreiros <rbarreiros@gmail.com>
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
-#include <fcntl.h> // open
-#include <stdio.h> // snprintf
-#include <stdlib.h> // atoi
-#include <unistd.h> // read
+// TODO TODO TODO Needs Testing!!
+
+#include "internal.h" // report_errno
 #include "command.h" // shutdown
 #include "gpio.h" // gpio_adc_setup
-#include "internal.h" // report_errno
-#include "sched.h" // sched_shutdown
 
 #include <wiringPi.h>
 
