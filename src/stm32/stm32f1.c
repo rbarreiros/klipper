@@ -107,7 +107,8 @@ stm32f1_alternative_remap(uint32_t mapr_mask, uint32_t mapr_value)
     AFIO->MAPR = mapr;
 }
 
-#define STM_OSPEED 0x1 // ~10Mhz at 50pF
+//#define STM_OSPEED 0x1 // ~10Mhz at 50pF ?!?!?! why AF funcion at 10mhz and not 50mhz ?!?!
+#define STM_OSPEED 0x3
 
 // Set the mode and extended function of a pin
 void
