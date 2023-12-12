@@ -4,41 +4,112 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
-#include "autoconf.h" // CONFIG_MACH_STM32F1
-#include "command.h"
-#include "gpio.h"     // i2c_setup
-#include "internal.h" // GPIO
-#include "sched.h"  // decl_init
+#include "fsmc.h" 
+#include "sched.h"                // decl_init
 #include "generic/armcm_timer.h"  // udelay
+#include "gpio.h"                 // gpio_out*
+#include "command.h"              // DECL_*
+#include "board/misc.h"           // timer_*
+#include "internal.h"             // MACH & gpio
+#include "autoconf.h"             // Kconfig
 
-#include "ili9341.h" // temporary
+#include <stdlib.h>               // atoi
+
+/*
+
+  TODO
+
+  - setup DMA, use DMA by default, but, provide a setting to be able to disable DMA in config if required
+  - setup input devices, do touch and encoder which should be selected in config, if encoder, supply pins
+  - setup orientation, portrait/landscape
+
+  - create a default screen informing the user to connect to klipper, and only then it should switch to
+    the regular UI, whatever it might be.
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* Only for stm32f103ze, also uses FSMC, and we should eventually add support for it
+#if ENABLED(STM32_XL_DENSITY)
+  #define FSMC_CS_NE2 PG9
+  #define FSMC_CS_NE3 PG10
+  #define FSMC_CS_NE4 PG12
+
+  #define FSMC_RS_A0  PF0
+  #define FSMC_RS_A1  PF1
+  #define FSMC_RS_A2  PF2
+  #define FSMC_RS_A3  PF3
+  #define FSMC_RS_A4  PF4
+  #define FSMC_RS_A5  PF5
+  #define FSMC_RS_A6  PF12
+  #define FSMC_RS_A7  PF13
+  #define FSMC_RS_A8  PF14
+  #define FSMC_RS_A9  PF15
+  #define FSMC_RS_A10 PG0
+  #define FSMC_RS_A11 PG1
+  #define FSMC_RS_A12 PG2
+  #define FSMC_RS_A13 PG3
+  #define FSMC_RS_A14 PG4
+  #define FSMC_RS_A15 PG5
+#endif
+*/
+
+#define FSMC_RS_A16   GPIO('D', 11)
+#define FSMC_RS_A17   GPIO('D', 12)
+#define FSMC_RS_A18   GPIO('D', 13)
+#define FSMC_RS_A19   GPIO('E', 3)
+#define FSMC_RS_A20   GPIO('E', 4)
+#define FSMC_RS_A21   GPIO('E', 5)
+#define FSMC_RS_A22   GPIO('E', 6)
+#define FSMC_RS_A23   GPIO('E', 2)
+
+/* for stm32f103ze
+#if ENABLED(STM32_XL_DENSITY)
+  #define FSMC_RS_A24 PG13
+  #define FSMC_RS_A25 PG14
+#endif
+*/
+
+static struct fsmc_lvgl {
+//  struct timer timer;
+//  uint32_t rest_ticks;
+  struct gpio_out bl;
+  struct gpio_out rst;
+  struct gpio_out led;
+} fsmc_lvgl;
 
 // The board being used to debug is a Longer, which has a
-// bootloader and app starts at 0x08010000 (64kb bootloader)
-
-typedef struct
-{
-  volatile uint16_t REG;
-  volatile uint16_t RAM;
-} LCD_TypeDef;
+// bootloader, app starts at 0x08010000 (64kb bootloader)
 
 LCD_TypeDef *LCD;
 
-void
+inline void
 fsmc_write_reg(uint16_t reg)
 {
   LCD->REG = reg;
   __DSB();
 }
 
-void
+inline void
 fsmc_write_data(uint16_t value)
 {
   LCD->RAM = value;
   __DSB();
 }
 
-uint16_t
+inline uint16_t
 fsmc_read_data(uint16_t reg)
 {
   LCD->REG = reg;
@@ -47,155 +118,75 @@ fsmc_read_data(uint16_t reg)
   return LCD->RAM;
 }
 
-//3. Set cursor position
-void ili9341_SetCursorPosition(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2) {
+// STM32 pin description format is P<PORT><PIN NR> ex PD7 or PD10
+uint32_t
+fsmc_pin_to_gpio(char *str)
+{
+  // quick an easy method of getting the info we need, is there a better way ???   
+  int pinNr = 9999;
+  char port = str[1];
+  char nr[3] = {0};
 
-  fsmc_write_reg (ILI9341_CASET);
-  fsmc_write_data(x1>>8);
-  fsmc_write_data(x1 & 0xFF);
-  fsmc_write_data(x2>>8);
-  fsmc_write_data(x2 & 0xFF);
+  nr[0] = str[2];  
+  nr[1] = (strlen(str) == 4) ? str[3] : '\0';
+  nr[2] = '\0';
 
-  fsmc_write_reg (ILI9341_RASET);
-  fsmc_write_data(y1>>8);
-  fsmc_write_data(y1 & 0xFF);
-  fsmc_write_data(y2>>8);
-  fsmc_write_data(y2 & 0xFF);
-  fsmc_write_reg(ILI9341_WRITE_RAM);
+  pinNr = atoi(nr);
+
+  output("PIN: %s %s %s %u", str, port, nr, pinNr);
+
+  return GPIO(port, pinNr);
 }
 
 void
-ili9341_init(void)
+fsmc_set_address(void)
 {
-    // TOUCH_LCD_IO_Init();
+  uint32_t controllerAddress = (uint32_t)FSMC_BANK1;
 
-  fsmc_write_reg(ILI9341_SWRESET);
-  /* Wait for 200ms */
-  udelay(100000);
+#define _ORADDR(x) controllerAddress |= ((1 << x) - 2);
 
-  /* Sleep In Command */
-  fsmc_write_reg(ILI9341_SLEEP_OUT);
-  /* Wait for 20ms */
-  udelay(20000);
+  switch (fsmc_pin_to_gpio(CONFIG_STM32_FSMC_RS_PIN)) 
+  {
+    /* TODO
+    #if ENABLED(STM32_XL_DENSITY)
+      case FSMC_RS_A0:  _ORADDR( 1); break;
+      case FSMC_RS_A1:  _ORADDR( 2); break;
+      case FSMC_RS_A2:  _ORADDR( 3); break;
+      case FSMC_RS_A3:  _ORADDR( 4); break;
+      case FSMC_RS_A4:  _ORADDR( 5); break;
+      case FSMC_RS_A5:  _ORADDR( 6); break;
+      case FSMC_RS_A6:  _ORADDR( 7); break;
+      case FSMC_RS_A7:  _ORADDR( 8); break;
+      case FSMC_RS_A8:  _ORADDR( 9); break;
+      case FSMC_RS_A9:  _ORADDR(10); break;
+      case FSMC_RS_A10: _ORADDR(11); break;
+      case FSMC_RS_A11: _ORADDR(12); break;
+      case FSMC_RS_A12: _ORADDR(13); break;
+      case FSMC_RS_A13: _ORADDR(14); break;
+      case FSMC_RS_A14: _ORADDR(15); break;
+      case FSMC_RS_A15: _ORADDR(16); break;
+    #endif
+    */
+    case FSMC_RS_A16: _ORADDR(17); break;
+    case FSMC_RS_A17: _ORADDR(18); break;
+    case FSMC_RS_A18: _ORADDR(19); break;
+    case FSMC_RS_A19: _ORADDR(20); break;
+    case FSMC_RS_A20: _ORADDR(21); break;
+    case FSMC_RS_A21: _ORADDR(22); break;
+    case FSMC_RS_A22: _ORADDR(23); break;
+    case FSMC_RS_A23: _ORADDR(24); break;
+    /* TODO
+    #if ENABLED(STM32_XL_DENSITY)
+      case FSMC_RS_A24: _ORADDR(25); break;
+      case FSMC_RS_A25: _ORADDR(26); break;
+    #endif
+    */
+    default:
+      output("UNABLE TO FIND THE RIGHT FSMC RS ADDRESS --- CHECK CONFIG ---");
+  }
 
-  fsmc_write_reg(ILI9341_POWERA);
-  fsmc_write_data(0x39);
-  fsmc_write_data(0x2C);
-  fsmc_write_data(0x00);
-  fsmc_write_data(0x34);
-  fsmc_write_data(0x02);
-
-  fsmc_write_reg(ILI9341_POWERB);
-  fsmc_write_data(0x00); 
-  fsmc_write_data(0xC1);
-  fsmc_write_data(0x30);
-
-  fsmc_write_reg(ILI9341_DTCA);
-  fsmc_write_data(0x85);
-  fsmc_write_data(0x00);
-  fsmc_write_data(0x78);
-
-  fsmc_write_reg(ILI9341_DTCB);
-  fsmc_write_data(0x00);
-  fsmc_write_data(0x00);
-
-  fsmc_write_reg(ILI9341_POWER_SEQ);
-  fsmc_write_data(0x64);
-  fsmc_write_data(0x03);
-  fsmc_write_data(0x12);
-  fsmc_write_data(0x81);
-
-  fsmc_write_reg(ILI9341_DFC);
-  fsmc_write_data(0x08);
-  fsmc_write_data(0x82);
-  fsmc_write_data(0x27); // Source Output Scan Direction: 0, Gate Output Scan Direction: 0
-
-  fsmc_write_reg(ILI9341_DINVOFF);
-  fsmc_write_reg(ILI9341_PRC);
-  fsmc_write_data(0x20);
-
-  /* VCOM setting */
-  fsmc_write_reg(ILI9341_VCOM_CTRL1);
-  fsmc_write_data(0x3E);
-  fsmc_write_data(0x28);
-  fsmc_write_reg(ILI9341_VCOM_CTRL2);
-  fsmc_write_data(0x86);
-
-  /* Frame Rate Control in normal mode */
-  fsmc_write_reg(ILI9341_FR_CTRL);
-  fsmc_write_data(0x00);
-  fsmc_write_data(0x18);
-
-  /* Power Control */
-  fsmc_write_reg(ILI9341_POWER_CTRL1);
-  fsmc_write_data(0x23);
-  fsmc_write_reg(ILI9341_POWER_CTRL2);
-  fsmc_write_data(0x10);
-
-  /* Normal display for Driver Down side */
-  fsmc_write_reg(ILI9341_NORMAL_DISPLAY);
-  fsmc_write_data(0x48); // MY and ML flipped +  bit 3 RGB and BGR changed.
-
-  /* Color mode 16bits/pixel */
-  fsmc_write_reg(ILI9341_COLOR_MODE);
-  fsmc_write_data(0x55);
-
-/* Gamma Correction */
-  fsmc_write_reg(ILI9341_3GAMMA_EN);
-  fsmc_write_data(0x00);                 // 3Gamma Function Disable
-  fsmc_write_reg(ILI9341_GAMMA);
-  fsmc_write_data(0x01);               // Gamma curve selected
-
-  fsmc_write_reg(ILI9341_PGAMMA);
-  fsmc_write_data(0x0F);
-  fsmc_write_data(0x31);
-  fsmc_write_data(0x2B);
-  fsmc_write_data(0x0C);
-  fsmc_write_data(0x0E);
-  fsmc_write_data(0x08);
-  fsmc_write_data(0x4E);
-  fsmc_write_data(0xF1);
-  fsmc_write_data(0x37);
-  fsmc_write_data(0x07);
-  fsmc_write_data(0x10);
-  fsmc_write_data(0x03);
-  fsmc_write_data(0x0E);
-  fsmc_write_data(0x09);
-  fsmc_write_data(0x00);
-
-  fsmc_write_reg(ILI9341_NGAMMA);
-  fsmc_write_data(0x00);
-  fsmc_write_data(0x0E);
-  fsmc_write_data(0x14);
-  fsmc_write_data(0x03);
-  fsmc_write_data(0x11);
-  fsmc_write_data(0x07);
-  fsmc_write_data(0x31);
-  fsmc_write_data(0xC1);
-  fsmc_write_data(0x48);
-  fsmc_write_data(0x08);
-  fsmc_write_data(0x0F);
-  fsmc_write_data(0x0C);
-  fsmc_write_data(0x31);
-  fsmc_write_data(0x36);
-  fsmc_write_data(0x0F);
-
-  fsmc_write_reg(ILI9341_NORON);
-  fsmc_write_reg(ILI9341_DISPLAY_ON);
-
+  LCD = (LCD_TypeDef*)controllerAddress;
 }
-
-void ili9341_Fill(uint16_t color) {
-	uint32_t n = 240 * 320;
-	
-	ili9341_SetCursorPosition(0, 0,   240 - 1, 320 - 1);
-	
-	while (n--) {
-    fsmc_write_data(color);
-	}
-}
-
-
 
 /**
 
@@ -240,8 +231,7 @@ void ili9341_Fill(uint16_t color) {
 
 #define LCD_USE_DMA_FSMC                          // Use DMA transfers to send data to the TFT
 #define FSMC_DMA_DEV                        DMA2
-#define FSMC_DMA_CHANNEL                 DMA_CH5
-
+#define FSMC_DMA_CHANNEL                    DMA_CH5
 
  Note: Alfawise U20/U30 boards DON'T use SPI2, as the hardware designer
  mixed up MOSI and MISO pins. SPI is managed in SW, and needs pins
@@ -256,33 +246,16 @@ void ili9341_Fill(uint16_t color) {
 #endif
 */
 
-static struct task_wake blink;
-struct gpio_out led, rst, bl;
-
-void led_blink(void)
-{
-  if (!sched_check_wake(&blink))
-    return;
-
-  gpio_out_toggle_noirq(led);
-}
-DECL_TASK(led_blink);
-
 void
 fsmc_setup(void)
 {
   uint32_t reg, mask;
 
-  uint32_t controllerAddress = (uint32_t)FSMC_BANK1;
-  controllerAddress |= ((1 << 17) - 2);
-  LCD = (LCD_TypeDef*)controllerAddress;
+  fsmc_set_address();
 
   // Led Pin PC2 
-  led = gpio_out_setup(GPIO('C', 2), 1);
-
-  // Setup DMA --- TODO
-
-  // 
+  fsmc_lvgl.led = gpio_out_setup(GPIO('C', 2), 1);
+  gpio_out_write(fsmc_lvgl.led, 0);
 
   // Disable FSMC
   FSMC_Bank1->BTCR[0] &= ~(0x1UL << (0U));
@@ -292,8 +265,6 @@ fsmc_setup(void)
   // I'm using some stm32f103vet6 boards as reference
   // one would need to check variations and change accordingly
 
-  //if (!is_enabled_pclock((uint32_t)FSMC_BANK1)) {
-    //enable_pclock((uint32_t)FSMC_BANK1);
     RCC->AHBENR |= RCC_AHBENR_FSMCEN;
     /* Delay after an RCC peripheral clock enabling */
     volatile uint32_t tmpreg = READ_BIT(RCC->AHBENR, RCC_AHBENR_FSMCEN);
@@ -316,57 +287,14 @@ fsmc_setup(void)
     gpio_peripheral(GPIO('E', 11), GPIO_FUNCTION(0), 0);  // D8
     gpio_peripheral(GPIO('E', 12), GPIO_FUNCTION(0), 0);  // D9
     gpio_peripheral(GPIO('E', 13), GPIO_FUNCTION(0), 0);  // D10
-    gpio_peripheral(GPIO('E', 14), GPIO_FUNCTION(0), 0);  // D11ls
-    
+    gpio_peripheral(GPIO('E', 14), GPIO_FUNCTION(0), 0);  // D11
     gpio_peripheral(GPIO('E', 15), GPIO_FUNCTION(0), 0);  // D12
 
-    gpio_peripheral(GPIO('D', 7), GPIO_FUNCTION(0), 0);   // NE1 (CS)
-    gpio_peripheral(GPIO('D', 11), GPIO_FUNCTION(0), 0);   // RS (A16)
-
-    /**
-    CRL - CNF7/MODE7 | 6 ... | CNF0/MODE0
-
-    CNF :
-      Input Mode:
-      00 - Analog
-      01 - Floating input (reset)
-      10 - Input pull up
-      11 - Reserved
-
-      Output Mode:
-      00 - General Purpose Push Pull
-      01 - General Purpose Open Drain
-      10 - Alternate Push Pull
-      11 - Alternate Open Drain
-
-    MODE : 
-      00 - Input mode (Reset)
-      01 - Output mode max speed 10 Mhz
-      10 - Output mode max speed 2 Mhz
-      11 - Output mode max speed 50 Mhz
-
-    Alternate mode Push Pull max speed - 1011 - 0xb
-    Output push pull max speed         - 0011 - 0x3
-    ---
-    
-    AF 0, 1, 4, 5, 7, 8, 9, 10, 11, 14, 15
-    OU 12
-
-    GPIOD - bb?3bbbb  b?bb??bb
-          - bb42bbbb  b4bb44bb
-
-    GPIOD
-    CRL - 0xb4bb44bb
-    CRH - 0xbb42bbbb
-    
-    GPIOE
-    CRL - 0xb4444444
-    CRH - 0xbbbbbbbb
-    
-    */
-
-
-
+    // 
+    //gpio_peripheral(GPIO('D', 7), GPIO_FUNCTION(0), 0);   // NE1 (CS)
+    //gpio_peripheral(GPIO('D', 11), GPIO_FUNCTION(0), 0);   // RS (A16)
+    gpio_peripheral(fsmc_pin_to_gpio(CONFIG_STM32_FSMC_CS_PIN), GPIO_FUNCTION(0), 0);   // NE1 (CS)
+    gpio_peripheral(fsmc_pin_to_gpio(CONFIG_STM32_FSMC_RS_PIN), GPIO_FUNCTION(0), 0);   // RS (A16)
 
     // Setup FSMC
     // STM32 headers group together BCR and BTR register in BTCR[8]
@@ -393,7 +321,6 @@ fsmc_setup(void)
       Bit   1 MUXEN: Address/data multiplexing enable bit           - 1: Address/Data multiplexed on databus (default after reset)
       Bit   0 MBKEN: Memory bank enable bit                         - 1: Corresponding memory bank is enabled
     */
-
 
     reg = 0x1010;
     mask = 0xfff7f;
@@ -424,13 +351,6 @@ fsmc_setup(void)
     FSMC_Bank1->BTCR[1] = 0xfff0fff;
 
     FSMC_Bank1E->BWTR[0] = 0x0FFFFFFFU;
-//#if ENABLED(STM32_XL_DENSITY)
-    //FSMC_NOR_PSRAM4_BASE->BCR = FSMC_BCR_WREN | FSMC_BCR_MTYP_SRAM | FSMC_BCR_MWID_16BITS | FSMC_BCR_MBKEN;
-    //FSMC_NOR_PSRAM4_BASE->BTR = (FSMC_DATA_SETUP_TIME << 8) | FSMC_ADDRESS_SETUP_TIME;
-//#else // PSRAM1 for STM32F103V (high density)
-    //FSMC_NOR_PSRAM1_BASE->BCR = FSMC_BCR_WREN | FSMC_BCR_MTYP_SRAM | FSMC_BCR_MWID_16BITS | FSMC_BCR_MBKEN;
-    //FSMC_NOR_PSRAM1_BASE->BTR = (FSMC_DATA_SETUP_TIME << 8) | FSMC_ADDRESS_SETUP_TIME;
-//#endif
 
     // Enable FSMC
     FSMC_Bank1->BTCR[0] |= (0x1UL << (0U));
@@ -438,25 +358,48 @@ fsmc_setup(void)
     // Disconnect NADV
     ((((AFIO_TypeDef *)((0x40000000UL + 0x00010000UL) + 0x00000000UL))->MAPR2) |= ((0x1UL << (10U))));
 
-  //}
-  
+
   // Reset LCD
 
-  bl = gpio_out_setup(GPIO('D', 12), 0);  // backlight
-  rst = gpio_out_setup(GPIO('C', 4), 0);  // reset
+  fsmc_lvgl.bl = gpio_out_setup(fsmc_pin_to_gpio(CONFIG_STM32_FSMC_BACKLIGHT_PIN), 0); // backlight
+  fsmc_lvgl.rst = gpio_out_setup(fsmc_pin_to_gpio(CONFIG_STM32_FSMC_RESET_PIN), 0);  // reset
 
-  gpio_out_write(rst, 0);
+  gpio_out_write(fsmc_lvgl.rst, 0);
   udelay(10000);
-  gpio_out_write(rst, 1);
+  gpio_out_write(fsmc_lvgl.rst, 1);
   udelay(10000);
-  gpio_out_write(bl, 1);
+  gpio_out_write(fsmc_lvgl.bl, 1);
 
-  // Get lcd ID
+  // Start LVGL
 
-  ili9341_init();
-  ili9341_Fill(0xF800);
+  lvgl_display_init();
 
-  gpio_out_write(led, 0);
 }
-
 DECL_INIT(fsmc_setup);
+
+void fsmc_check_pin(uint32_t *args)
+{
+  // we should test this by supplying some doofus non existant pin
+  uint32_t pin = fsmc_pin_to_gpio(CONFIG_STM32_FSMC_RS_PIN);
+  output("Setup pin %s with integer %u", CONFIG_STM32_FSMC_RS_PIN, pin);
+  output("Correct pin is %u", GPIO('D', 11));
+}
+DECL_COMMAND(fsmc_check_pin, "fsmc_check_pin");
+
+// Simple debug task to watch if mcu crashes, useless otherwise
+static uint32_t lastLedTick;
+void fsmc_led_blink_task(void)
+{
+  uint32_t now = timer_read_time();
+  int32_t ledDiff = now - lastLedTick;
+
+  if(ledDiff > 0 && ledDiff > timer_from_us(1000000))
+  {
+    gpio_out_toggle_noirq(fsmc_lvgl.led);
+    lastLedTick = now;
+  }
+  else if(ledDiff < 0)
+    lastLedTick = now;
+}
+DECL_TASK(fsmc_led_blink_task);
+

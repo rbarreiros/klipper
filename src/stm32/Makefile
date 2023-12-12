@@ -4,6 +4,11 @@
 CROSS_PREFIX=arm-none-eabi-
 
 dirs-y += src/stm32 src/generic lib/fast-hash
+
+# lvgl // Maybe add a target in makefile to download lvgl into ext/lvgl ?
+LVGL_DIR = ext
+LVGL_DIR_NAME = lvgl
+
 dirs-$(CONFIG_MACH_STM32F0) += lib/stm32f0
 dirs-$(CONFIG_MACH_STM32F1) += lib/stm32f1
 dirs-$(CONFIG_MACH_N32G45x) += lib/n32g45x
@@ -14,14 +19,17 @@ dirs-$(CONFIG_MACH_STM32G0) += lib/stm32g0
 dirs-$(CONFIG_MACH_STM32G4) += lib/stm32g4
 dirs-$(CONFIG_MACH_STM32H7) += lib/stm32h7
 dirs-$(CONFIG_MACH_STM32L4) += lib/stm32l4
+dirs-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src -type d)
 
 MCU := $(shell echo $(CONFIG_MCU))
 MCU_UPPER := $(shell echo $(CONFIG_MCU) | tr a-z A-Z | tr X x)
 
 CFLAGS-$(CONFIG_MACH_STM32F0) += -mcpu=cortex-m0 -Ilib/stm32f0/include
-CFLAGS-$(CONFIG_MACH_STM32F103) += -mcpu=cortex-m3
+CFLAGS-$(CONFIG_MACH_STM32F1) += -mcpu=cortex-m3
 CFLAGS-$(CONFIG_MACH_N32G45x) += -mcpu=cortex-m4 -Ilib/n32g45x/include
 CFLAGS-$(CONFIG_MACH_STM32F1) += -Ilib/stm32f1/include
+CFLAGS-$(CONFIG_STM32_ENABLE_LVGL) += -Iext -Iout/board -DLV_CONF_INCLUDE_SIMPLE 
+
 CFLAGS-$(CONFIG_MACH_STM32F2) += -mcpu=cortex-m3 -Ilib/stm32f2/include
 CFLAGS-$(CONFIG_MACH_STM32F4) += -mcpu=cortex-m4 -Ilib/stm32f4/include
 CFLAGS-$(CONFIG_MACH_STM32F7) += -mcpu=cortex-m7 -Ilib/stm32f7/include
@@ -43,8 +51,21 @@ src-$(CONFIG_MACH_STM32F0) += ../lib/stm32f0/system_stm32f0xx.c
 src-$(CONFIG_MACH_STM32F0) += generic/timer_irq.c stm32/stm32f0_timer.c
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0.c stm32/gpioperiph.c
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0_adc.c stm32/stm32f0_i2c.c
-src-$(CONFIG_MACH_STM32F103) += ../lib/stm32f1/system_stm32f1xx.c
-src-$(CONFIG_MACH_STM32F103) += stm32/adc.c stm32/fsmc.c
+src-$(CONFIG_MACH_STM32F1) += ../lib/stm32f1/system_stm32f1xx.c stm32/adc.c
+
+# Should only be added when chosen in menuconfig
+src-$(CONFIG_STM32_ENABLE_LVGL) += stm32/fsmc.c
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/core -name "*.c" -printf "../%p\n" )
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/draw -name "*.c" -printf "../%p\n" )
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/extra -name "*.c" -printf "../%p\n" )
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/font -name "*.c" -printf "../%p\n" )
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/hal -name "*.c" -printf "../%p\n" )
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/misc -name "*.c" -printf "../%p\n" )
+src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/widgets -name "*.c" -printf "../%p\n" )
+
+# Display driver
+src-$(CONFIG_STM32_LVGL_ILI9341) += stm32/fsmc_ili9341.c
+
 src-$(CONFIG_MACH_N32G45x) += ../lib/stm32f1/system_stm32f1xx.c
 src-$(CONFIG_MACH_N32G45x) += ../lib/n32g45x/n32g45x_adc.c stm32/n32g45x_adc.c
 src-$(CONFIG_MACH_STM32F1) += stm32/stm32f1.c generic/armcm_timer.c stm32/i2c.c
@@ -113,3 +134,8 @@ flash: $(OUT)klipper.bin lib/hidflash/hid-flash
 serialflash: $(OUT)klipper.bin
 	@echo "  Flashing $< to $(FLASH_DEVICE) via stm32flash"
 	$(Q)stm32flash -w $< -v -g 0 $(FLASH_DEVICE)
+
+# can't be arsed with permissions for now.
+stlinkflash: $(OUT)klipper.bin
+	@echo "  Flashing $< "
+	sudo st-flash write $< $(CONFIG_FLASH_APPLICATION_ADDRESS)
