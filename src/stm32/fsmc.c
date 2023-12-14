@@ -4,16 +4,21 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include "autoconf.h"             // Kconfig
 #include "fsmc.h" 
+#include "lvgl_base.h"            // lvgl_start
+#include "internal.h"             // MACH & gpio
+#include "gpio.h"                 // gpio_out*
 #include "sched.h"                // decl_init
 #include "generic/armcm_timer.h"  // udelay
-#include "gpio.h"                 // gpio_out*
 #include "command.h"              // DECL_*
-#include "board/misc.h"           // timer_*
-#include "internal.h"             // MACH & gpio
-#include "autoconf.h"             // Kconfig
+#include "generic/armcm_boot.h"   // armcm_enable_irq
 
 #include <stdlib.h>               // atoi
+
+
+#include "board/misc.h"           // timer_*              TO BE REMOVED
+
 
 /*
 
@@ -116,6 +121,40 @@ fsmc_read_data(uint16_t reg)
   __DSB();
 
   return LCD->RAM;
+}
+
+void DMA1x_IRQHandler(void)
+{
+ 	if((DMA1->ISR & DMA_ISR_TCIF1) == DMA_ISR_TCIF1)
+	{
+		DMA1->IFCR = DMA_IFCR_CTCIF1;
+		DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+
+    lvgl_dma_transfer_complete();
+	}
+}
+
+void fsmc_dma_transfer(uint16_t *buff, uint32_t size)
+{
+  // Reset DMA
+  // memory 2 memory, Very High PRIO, 16 bit size in both, memory don't inc, periph inc, no circular mode
+  // direction periph -> memory, transfer complete int enabled.
+  //DMA1_Channel1->CCR = 0x7542; 
+  DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+  DMA1_Channel1->CCR = DMA_CCR_MEM2MEM | DMA_CCR_PL | DMA_CCR_MSIZE_0 | DMA_CCR_PSIZE_0 | DMA_CCR_PINC | DMA_CCR_TCIE;
+
+  // Size of data to transfer
+  DMA1_Channel1->CNDTR = size;
+
+  // peripheral address, SOURCE
+  DMA1_Channel1->CPAR = (uint32_t)buff;
+
+  // memory address, DESTINATION
+  //DMA2_Channel4->CMAR = (uint32_t)LCD->RAM;
+  DMA1_Channel1->CMAR = ((uint32_t)(0x60000000 | 0x60020000)); // FIX
+
+  // as soon as we enable, transfer is initiated
+  DMA1_Channel1->CCR |= DMA_CCR_EN;
 }
 
 // STM32 pin description format is P<PORT><PIN NR> ex PD7 or PD10
@@ -261,11 +300,12 @@ fsmc_setup(void)
   FSMC_Bank1->BTCR[0] &= ~(0x1UL << (0U));
 
 
-  // Enable clock and setup FSMC pins
+  // Enable fsmc and dma2 clock and setup FSMC pins
   // I'm using some stm32f103vet6 boards as reference
   // one would need to check variations and change accordingly
 
-    RCC->AHBENR |= RCC_AHBENR_FSMCEN;
+    RCC->AHBENR |= RCC_AHBENR_FSMCEN | RCC_AHBENR_DMA1EN;
+
     /* Delay after an RCC peripheral clock enabling */
     volatile uint32_t tmpreg = READ_BIT(RCC->AHBENR, RCC_AHBENR_FSMCEN);
     (void)(tmpreg);
@@ -358,7 +398,6 @@ fsmc_setup(void)
     // Disconnect NADV
     ((((AFIO_TypeDef *)((0x40000000UL + 0x00010000UL) + 0x00000000UL))->MAPR2) |= ((0x1UL << (10U))));
 
-
   // Reset LCD
 
   fsmc_lvgl.bl = gpio_out_setup(fsmc_pin_to_gpio(CONFIG_STM32_FSMC_BACKLIGHT_PIN), 0); // backlight
@@ -370,21 +409,12 @@ fsmc_setup(void)
   udelay(10000);
   gpio_out_write(fsmc_lvgl.bl, 1);
 
+  armcm_enable_irq(DMA1x_IRQHandler, DMA1_Channel1_IRQn, 2);
+
   // Start LVGL
-
-  lvgl_display_init();
-
+  lvgl_start();
 }
 DECL_INIT(fsmc_setup);
-
-void fsmc_check_pin(uint32_t *args)
-{
-  // we should test this by supplying some doofus non existant pin
-  uint32_t pin = fsmc_pin_to_gpio(CONFIG_STM32_FSMC_RS_PIN);
-  output("Setup pin %s with integer %u", CONFIG_STM32_FSMC_RS_PIN, pin);
-  output("Correct pin is %u", GPIO('D', 11));
-}
-DECL_COMMAND(fsmc_check_pin, "fsmc_check_pin");
 
 // Simple debug task to watch if mcu crashes, useless otherwise
 static uint32_t lastLedTick;
@@ -402,4 +432,3 @@ void fsmc_led_blink_task(void)
     lastLedTick = now;
 }
 DECL_TASK(fsmc_led_blink_task);
-

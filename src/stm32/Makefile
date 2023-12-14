@@ -63,8 +63,8 @@ src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/
 src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/misc -name "*.c" -printf "../%p\n" )
 src-$(CONFIG_STM32_ENABLE_LVGL) += $(shell find -L $(LVGL_DIR)/$(LVGL_DIR_NAME)/src/widgets -name "*.c" -printf "../%p\n" )
 
-# Display driver
-src-$(CONFIG_STM32_LVGL_ILI9341) += stm32/fsmc_ili9341.c
+# LVGL Code and drivers
+src-$(CONFIG_STM32_LVGL_ILI9341) += stm32/lvgl_base.c stm32/lvgl_ili9341.c stm32/lvgl_commands.c
 
 src-$(CONFIG_MACH_N32G45x) += ../lib/stm32f1/system_stm32f1xx.c
 src-$(CONFIG_MACH_N32G45x) += ../lib/n32g45x/n32g45x_adc.c stm32/n32g45x_adc.c
